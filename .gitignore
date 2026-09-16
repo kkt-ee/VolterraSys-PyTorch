@@ -2,7 +2,6 @@
 
 /.*
 /!.gitignore
-/updateGit
 **/.*
 !**/.gitignore
 **/__pycache__/
@@ -13,19 +12,6 @@ dist/
 *.egg-info/
 scripts/
 
-/CheckThenDelete
 /.ipynb_checkpoints/
-# /MakingAndMaintenenceOfIIRMutltidimensionalLayers.ipynb/.ipynb_checkpoints/
-/VolterraSys/__pycache__
-/save.ckpt
-/TryChapter_U_naturalQSIVolterraAtlas_fast_v00.ipynb
+/updateGit
 
-
-Volterra-torch
-math-Volterra.pdf
-viewer
-deprecated
-VolterraSysD.pypi/.gitignore
-dependencies
-
-MakingOf.../Making.archive

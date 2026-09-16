@@ -1,164 +1,168 @@
-import tensorflow as tf
-from TFDWT.DWT1DFB import DWT1D, IDWT1D
+import math
 
-#%% Shift variant Linear (m=1) Multiresolution Volterra Kernel
-@tf.keras.utils.register_keras_serializable()
-class LinearVolterra1D(tf.keras.layers.Layer):
-    """
-    VolterraSys: Multidimensional linear and nonlinear Volterra kernel layers in wavelet and natural bases.
-    Copyright 2025 Kishore Kumar Tarafdar.
+import torch
+from torch import nn
+from torch.nn.modules.lazy import LazyModuleMixin
+from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
+
+from dwt.DWT1D import DWT1D, IDWT1D
+
+
+def _glorot_uniform_(tensor):
+    """Keras GlorotUniform initialization for a channels-last kernel."""
+    shape = tuple(tensor.shape)
+    if len(shape) == 1:
+        fan_in = fan_out = shape[0]
+    elif len(shape) == 2:
+        fan_in, fan_out = shape
+    else:
+        receptive_field_size = math.prod(shape[:-2])
+        fan_in = shape[-2] * receptive_field_size
+        fan_out = shape[-1] * receptive_field_size
+
+    limit = math.sqrt(6.0 / (fan_in + fan_out))
+    with torch.no_grad():
+        tensor.uniform_(-limit, limit)
+
+
+class LinearVolterra1D(LazyModuleMixin, nn.Module):
+    """Linear (m=1) multiresolution Volterra kernel (shift variant).
+
+    VolterraSys-PyTorch: Multidimensional linear and nonlinear Volterra kernel layers in wavelet and natural bases.
+    Copyright 2026 Kishore Kumar Tarafdar.
     Licensed under the Apache License, Version 2.0. See LICENSE for details.
-    
-    Linear (m=1) multiresolution Volterra Kernel (shift variant)
+
     Input: sequence x[n]
     Output: Linear monomial y1 (shift variant)
+    """
 
-    --@KKT, 03Jul2025"""
-    
     def __init__(self, filters=1, Ny=16, wave='haar', **kwargs):
-        super().__init__(**kwargs)
-        # self.L = kernel_size
+        super().__init__()
         self.wave = wave
-        if self.wave is None: self.mra = False
-        else: self.mra = True
+        if self.wave is None:
+            self.mra = False
+        else:
+            self.mra = True
         self.filters = filters
         self.Ny = Ny
-        # self.mra = mra
-    
-    def build(self, input_shape):
-        # input_shape: (batch_size, N, N, channels)
-        self.N = input_shape[1]
-        # self.L = self.N
-        self.channels = input_shape[-1]
-        kernel_shape = (self.Ny, self.N, input_shape[-1], self.filters)
-        # kernel_shape = (self.L, input_shape[-1])
-        self.h1 = self.add_weight(
-            shape=kernel_shape,
-            initializer='glorot_uniform',
-            trainable=True,
-            # regularizer=self.kernel_regularizer,
-            name='kernel'
-        )
-        # n = tf.range(self.N)
-        # self.row_indices = tf.math.mod(n[:, tf.newaxis] - n, self.N)
+
+        self.N = None
+        self.channels = None
+        self.h1 = UninitializedParameter()
 
         if self.mra:
-            N = int(input_shape[1])
+            self.S_input = UninitializedBuffer()
+            self.idwt_input = IDWT1D(self.wave, clean=False)
+            self.dwt_input = DWT1D(self.wave, clean=False)
+            self.dwt_output = DWT1D(self.wave, clean=False)
+            self.idwt_output = IDWT1D(self.wave, clean=False)
+        else:
+            self.register_buffer('S_input', None)
+            self.idwt_input = None
+            self.dwt_input = None
+            self.dwt_output = None
+            self.idwt_output = None
 
-            def initialize_synthesis(shape, dtype=None):
-                idwt_input = IDWT1D(self.wave, clean=False)
-                idwt_input.build((None, N, 1))
-                return tf.cast(idwt_input.S, dtype or tf.float32)
+        self.x = None
 
-            self.S_input = self.add_weight(
-                name='input_synthesis',
-                shape=(N, N),
-                initializer=initialize_synthesis,
-                trainable=False,
-            )
+    def initialize_parameters(self, x):
+        if self.N is None or self.has_uninitialized_params():
+            self.build(x.shape, device=x.device, dtype=self.h1.dtype)
 
-        super().build(input_shape)
+    def build(self, input_shape, device=None, dtype=None):
+        if device is None:
+            device = self.h1.device
+        if dtype is None:
+            dtype = self.h1.dtype
 
-    def call(self, x):  
-        self.x = x  
-        if self.mra==True:
+        self.N = int(input_shape[1])
+        self.channels = int(input_shape[-1])
+
+        if self.mra and isinstance(self.S_input, UninitializedBuffer):
+            S = self.idwt_input._get_S(self.N, device).to(dtype=dtype)
+            self.S_input.materialize((self.N, self.N), device=device, dtype=dtype)
+            with torch.no_grad():
+                self.S_input.copy_(S)
+
+        if not isinstance(self.h1, UninitializedParameter):
+            return self
+
+        kernel_shape = (self.Ny, self.N, self.channels, self.filters)
+        self.h1.materialize(kernel_shape, device=device, dtype=dtype)
+        _glorot_uniform_(self.h1)
+        return self
+
+    def forward(self, x):
+        self.x = x
+        if self.mra is True:
             return self.__compute_output_with_mra_kernel(x)
-        else: 
+        else:
             return self.__compute_output_in_natural_domain(x)
 
     def __compute_output_with_mra_kernel(self, x):
         HT = self.__make_H()
-        # print(HT.shape,'HT')
-        ## l-axis below --->l and ^v
-        
-        ## H[v,l] 
-        α = DWT1D(self.wave, clean=False)(x)
-        # print('α = ', α.shape)
-        # print('HT and α', HT.shape, α.shape)
-        β = tf.einsum('bic,uico->buo',α, HT) #HT and α (16, 4, 1, 1) (None, 4, 1)
-        # β = tf.einsum('buco->buo',β)
-        # print('β', β.shape)
 
-        # HTα = HT * α
-        # print(HTα.shape, '\n', tf.squeeze(HTα).numpy())
-        # beta = tf.expand_dims(tf.einsum('ijk->ik',HTα), axis=-1)
-        
-        # βT = tf.transpose(beta, perm=[1,0,2])
-        # print('βT',tf.squeeze(βT).numpy())
-        y = IDWT1D(self.wave, clean=False)(β)#
-        # print('y',tf.squeeze(y).numpy())
+        # H[v,l] and alpha[l].
+        alpha = self.dwt_input(x)
+        beta = torch.einsum('bic,uico->buo', alpha, HT)
+        y = self.idwt_output(beta)
         return y
-         
+
     def __compute_output_in_natural_domain(self, x):
-        ynatural = tf.einsum('bic,uico->buo',x, self.h1)
-        # print(ynatural.shape, 'natural y') 
+        ynatural = torch.einsum('bic,uico->buo', x, self.h1)
         return ynatural
 
     def sanity_check(self):
-        return self.__compute_output_with_mra_kernel(self.x),  self.__compute_output_in_natural_domain(self.x)  
-    
+        return (
+            self.__compute_output_with_mra_kernel(self.x),
+            self.__compute_output_in_natural_domain(self.x),
+        )
+
     def __make_H(self):
         def mra_kernel(h):
-            shape = tf.shape(h)
-            Ny, N, channels, filters = shape[0], shape[1], shape[2], shape[3]
-            
-            # Combine channels and filters: shape becomes (Ny, N, in_channels * filters)
-            h1_reshaped = tf.reshape(self.h1, [Ny, N, -1])
-            # print(h1_reshaped.shape, 'h1_reshaped')
+            shape = h.shape
+            Ny, N, channels, filters = shape
 
-            # Apply synthesis on the input axis and DWT on the output axis
-            dwt_layer2 = DWT1D(self.wave, clean=False)
-            
-            dwt_once = tf.einsum('uic,il->ulc', h1_reshaped, self.S_input)
-            # print(dwt_once.shape, 'dwt once')
-            dwt_once_T = tf.transpose(dwt_once, perm=[1, 0, 2])
-            # print(dwt_once_T.shape, 'dwt once T')  
-            dwt_twice = dwt_layer2(dwt_once_T)
-            # print(dwt_twice.shape, 'dwt twice')
+            # Combine channels and filters: (Ny, N, channels * filters).
+            h1_reshaped = self.h1.reshape(Ny, N, -1)
 
-            # Final transpose to (Ny, N, in_channels * filters)
-            tmp_H = tf.transpose(dwt_twice, perm=[1, 0, 2])
+            # Apply synthesis on the input axis and DWT on the output axis.
+            dwt_once = torch.einsum(
+                'uic,il->ulc', h1_reshaped, self.S_input
+            )
+            dwt_once_T = dwt_once.permute(1, 0, 2)
+            dwt_twice = self.dwt_output(dwt_once_T)
 
-            # Reshape back to (Ny, N, in_channels, filters)
-            H = tf.reshape(tmp_H, [self.h1.shape[0], self.h1.shape[1], self.h1.shape[2], self.h1.shape[3]])
-            # print(H.shape,'in mra kernel HT')
+            # Return to (Ny, N, channels * filters).
+            tmp_H = dwt_twice.permute(1, 0, 2)
+
+            # Restore (Ny, N, channels, filters).
+            H = tmp_H.reshape(
+                self.h1.shape[0],
+                self.h1.shape[1],
+                self.h1.shape[2],
+                self.h1.shape[3],
+            )
             return H
-        
-        if self.mra == True:
+
+        if self.mra is True:
             return mra_kernel(self.h1)
         else:
             return self.h1
-    
+
     def get_config(self):
-        config = super().get_config()
-        config.update({
+        return {
             'Ny': self.Ny,
             'wave': self.wave,
             'filters': self.filters,
-        })
-        return config
+        }
 
 
-
-if __name__=='__main__':
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"]="-1"   
-    ## Example
-    # Functional model
+if __name__ == '__main__':
     N, channels = 4, 1
-    input_shape = (N, channels) 
-    inputs = tf.keras.Input(shape=input_shape)
     filters, Ny = 1, 16
-    H = LinearVolterra1D(filters=filters, Ny=Ny, wave='haar')
-    # H = LinearVolterra1D(filters=filters, Ny=Ny, wave='haar', mra=False)
-    outputs = H(inputs)
-    # Build the model
-    model = tf.keras.Model(inputs=inputs, outputs=outputs)
-    model.compile(optimizer='adam', loss='mse', jit_compile=False)
-    model.summary()
-    ## 1D
-    inputs_data = tf.random.normal((1, N, 1))
-    targets = tf.random.normal((1, Ny, 1))
-    # Training loop for 5 epochs
-    epochs=5
-    history = model.fit(inputs_data, targets, epochs=5, verbose=1)
+    layer = LinearVolterra1D(filters=filters, Ny=Ny, wave='haar')
+    x = torch.randn(1, N, channels)
+    y = layer(x)
+    print('x shape:', x.shape)
+    print('y shape:', y.shape)

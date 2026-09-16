@@ -3,31 +3,31 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "VolterraSys"
+name = "VolterraSys-PyTorch"
 version = "0.0.1"
 authors = [
-  { name="Kishore Kumar Tarafdar", email="kkt.compute@gmail.com" },
+  { name = "Kishore Kumar Tarafdar", email = "kkt.compute@gmail.com" },
 ]
-description = "Multidimensional linear and nonlinear Volterra kernel layers in wavelet and natural bases"
+description = "PyTorch modules for 1D linear and quadratic Volterra kernels in wavelet and natural bases"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
-  "tensorflow>=2.15",
-  "keras",
-  "TFDWT",
+  "torch>=2.0",
+  "fdwt>=0.1.0",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Operating System :: OS Independent",
   "Topic :: Scientific/Engineering",
-  "Intended Audience :: Science/Research"
+  "Intended Audience :: Science/Research",
 ]
 license = "Apache-2.0"
-license-files = [ "LICENSE" ]
+license-files = ["LICENSE"]
 
 [project.urls]
-Homepage = "https://github.com/kkt-ee/VolterraSys"
-Issues = "https://github.com/kkt-ee/VolterraSys/issues"
+Homepage = "https://github.com/kkt-ee/VolterraSys-PyTorch"
+Issues = "https://github.com/kkt-ee/VolterraSys-PyTorch/issues"
+TensorFlow-Upstream = "https://github.com/kkt-ee/VolterraSys"
 
 [tool.hatch.build.targets.wheel]
-packages = ["VolterraSys"]
+packages = ["volterrasys"]

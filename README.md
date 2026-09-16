@@ -1,83 +1,61 @@
-# VolterraSys: Multidimensional linear and nonlinear Volterra kernel layers in wavelet and natural bases
+# VolterraSys-PyTorch: Multidimensional linear and nonlinear Volterra kernel layers in wavelet and natural bases
 
-[![PyPI Version](https://img.shields.io/pypi/v/VolterraSys?label=PyPI&color=gold)](https://pypi.org/project/VolterraSys/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/VolterraSys)](https://pypi.org/project/VolterraSys/)
-[![TensorFlow](https://img.shields.io/badge/tensorflow-required-darkorange)](https://www.tensorflow.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-deepgreen.svg?style=flat)](https://github.com/kkt-ee/VolterraSys/LICENSE)
+[![PyPI Version](https://img.shields.io/pypi/v/VolterraSys-PyTorch?label=PyPI&color=gold)](https://pypi.org/project/VolterraSys-PyTorch/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/VolterraSys-PyTorch)](https://pypi.org/project/VolterraSys-PyTorch/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-required-ee4c2c)](https://pytorch.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-deepgreen.svg?style=flat)](https://github.com/kkt-ee/VolterraSys-PyTorch/blob/master/LICENSE)
 
-`VolterraSys` provides TensorFlow/Keras layers for trainable multidimensional linear and quadratic Volterra kernels in wavelet and natural bases.
+`VolterraSys-PyTorch` provides PyTorch modules for trainable 1D linear and quadratic Volterra kernels in wavelet and natural bases. Tensors use channels-last layout: `(batch, length, channels)`.
 
-Copyright 2025 Kishore Kumar Tarafdar.
+Copyright 2026 Kishore Kumar Tarafdar.  
 Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE).
 
 ## Capabilities
 
-- linear Volterra kernel layer for 1D data (shift variant): `linearVolterra1D`.
-- Linear shift invariant wavelet and natural basis Volterra kernel layers for 1D, 2D, 3D data: `LSIVolterra1D`, `LSIVolterra2D`, `LSIVolterra3D`.
-- Quadratic shift invariant wavelet and natural basis Volterra kernel layers for 1D, 2D, 3D data: `QSIVolterra1D`, `QSIVolterra2D`, `QSIVolterra3D`.
-- Multiresolution Volterra kernels with orthogonal wavelets such as `wave="haar"` (default) and biorthogonal wavelets `wave="bior1.3"`. Supports wavelet families: "db", "sym", "coif", "bior", "rbio"  
-- Natural-domain kernels have `wave=None`.
-
-## Dependencies
-
-- TensorFlow (>=2.15)
-- Inputs are TensorFlow tensors with channel-last layout.
-- Wavelet domain requires the `TFDWT` package which can be installed via `pip install TFDWT`.
-<!-- - Natural-domain computation uses `wave=None`; wavelet-domain computation uses a supported wavelet name. -->
+- Linear shift-invariant 1D kernels: `LSIVolterra1D`.
+- Quadratic shift-invariant 1D kernels: `QSIVolterra1D`.
+- Linear shift-variant 1D kernels: `LinearVolterra1D`.
+- Orthogonal and biorthogonal wavelet-domain computation through `fdwt`.
+- Natural-domain computation with `wave=None`.
+- Trainable kernels with PyTorch autograd, optimizers, and `state_dict` serialization.
 
 ## Installation
 
 ```bash
-pip install VolterraSys
+pip install VolterraSys-PyTorch
 ```
 
-## Minimal Example
+## Minimal example
 
 ```python
-import tensorflow as tf
+import torch
 
-# Linear shift invariant wavelet bases Volterra kernels
-from VolterraSys.LSIVolterra1D import LSIVolterra1D
-from VolterraSys.LSIVolterra2D import LSIVolterra2D
-from VolterraSys.LSIVolterra3D import LSIVolterra3D
+from volterrasys.LSIVolterra1D import LSIVolterra1D
+from volterrasys.QSIVolterra1D import QSIVolterra1D
+from volterrasys.LinearVolterra1D import LinearVolterra1D
 
-# Quadratic shift invariant wavelet bases Volterra kernels
-from VolterraSys.QSIVolterra1D import QSIVolterra1D
-from VolterraSys.QSIVolterra2D import QSIVolterra2D
-from VolterraSys.QSIVolterra3D import QSIVolterra3D
+x = torch.randn(2, 32, 1)
 
-# Natural-domain linear and quadratic kernels layer examples
-# Linear
-x1d = tf.random.normal([1, 32, 1])
-y1d = LSIVolterra1D(filters=2, kernel_size=3, wave=None)(x1d)
+lsi = LSIVolterra1D(filters=2, kernel_size=4, wave="bior1.3")
+qsi = QSIVolterra1D(filters=2, kernel_size=4, wave="haar")
+linear = LinearVolterra1D(filters=2, Ny=16, wave=None)
 
-# Quadratic
-x2d = tf.random.normal([1, 8, 8, 1])
-yq2d = QSIVolterra2D(filters=2, kernel_size=2, wave=None)(x2d)
-
-x3d = tf.random.normal([1, 6, 6, 6, 1])
-yq3d = QSIVolterra3D(filters=2, kernel_size=2, wave=None)(x3d)
-
-print(y1d.shape, yq2d.shape, yq3d.shape)
+y_lsi = lsi(x)       # (2, 32, 2)
+y_qsi = qsi(x)       # (2, 32, 2)
+y_linear = linear(x) # (2, 16, 2)
 ```
 
-## Wavelet domain kernel layer examples
+The wavelet-domain and natural-domain implementations use the same channels-last tensor layout. `filters` is the number of output channels.
 
-```python
-# Linear layers
-layer1d = LSIVolterra1D(filters=1, kernel_size=4, wave="haar")
-layer2d = LSIVolterra2D(filters=1, kernel_size=4, wave="haar")
-layer3d = LSIVolterra3D(filters=1, kernel_size=4, wave="haar")
+## TensorFlow provenance
 
-# Quadratic layers
-qlayer1d = QSIVolterra1D(filters=1, kernel_size=4, wave='haar')
-qlayer2d = QSIVolterra2D(filters=1, kernel_size=4, wave='haar')
-qlayer3d = QSIVolterra3D(filters=1, kernel_size=4, wave='haar')
-```
+This repository is an operation-by-operation PyTorch port of [kkt-ee/VolterraSys](https://github.com/kkt-ee/VolterraSys). The port is based on TensorFlow commit `4ef3877` from `bugfix/biortho-linear1d`, marked by the `tf-final-before-pytorch-port` tag. The original TensorFlow Git history is retained as this repository's ancestry.
+
+The port preserves the TensorFlow kernel construction, circular indexing, wavelet-basis transformations, and `einsum` contractions. The corresponding PyTorch dependency is [`fdwt`](https://pypi.org/project/fdwt/).
 
 ## Citation
 
-This software is released for broad research, educational, and engineering use. If this package proves useful in related work, please cite the following thesis, whose Chapter 2 presents the underlying theory and computational details:
+If this package proves useful in related work, please cite the following thesis, whose Chapter 2 presents the underlying theory and computational details:
 
 ```bibtex
 @misc{tarafdar2026interpretablefrugallearningsystems,
