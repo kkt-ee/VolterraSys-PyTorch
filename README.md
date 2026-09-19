@@ -7,8 +7,8 @@
 
 `VolterraSys-PyTorch` provides PyTorch modules for trainable 1D linear and quadratic Volterra kernels in wavelet and natural bases. Tensors use channels-last layout: `(batch, length, channels)`.
 
-Copyright 2026 Kishore Kumar Tarafdar.  
-Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE).
+<!-- Copyright 2026 Kishore Kumar Tarafdar.  
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE). -->
 
 ## Capabilities
 
@@ -72,3 +72,7 @@ If this package proves useful in related work, please cite the following thesis,
 ## License
 
 Apache License 2.0. See [`LICENSE`](LICENSE).
+
+* * *
+
+***VolterraSys-PyTorch (C) 2026 Kishore Kumar Tarafdar, भारत*** 🇮🇳
