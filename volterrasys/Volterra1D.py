@@ -7,11 +7,14 @@ from torch.nn.modules.lazy import LazyModuleMixin
 from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 
 from dwt.DWT1D import DWT1D, IDWT1D
+from dwt.multilevel.dwt1 import dwt_packed_axis, idwt_packed_axis
 from ._wavelet_ops import (
     analysis_axis,
+    natural_to_wavelet_kernel,
     synthesis_axis,
-    synthesis_transpose_axis,
     validate_backend,
+    validate_level,
+    wavelet_to_natural_kernel,
 )
 
 
@@ -50,6 +53,7 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         Ny=16,
         wave='haar',
         backend='matrix',
+        level=1,
         **kwargs,
     ):
         super().__init__()
@@ -61,6 +65,7 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         self.mra = self.wave is not None
         self.filters = filters
         self.Ny = Ny
+        self.level = validate_level(level)
         self.backend = validate_backend(backend)
 
         self._make_einsum_equations()
@@ -71,13 +76,9 @@ class Volterra1D(LazyModuleMixin, nn.Module):
 
         if self.mra and self.backend == 'matrix':
             self.A_input = UninitializedBuffer()
-            self.S_input = UninitializedBuffer()
-            self.A_output = UninitializedBuffer()
             self.S_output = UninitializedBuffer()
         else:
             self.register_buffer('A_input', None)
-            self.register_buffer('S_input', None)
-            self.register_buffer('A_output', None)
             self.register_buffer('S_output', None)
 
         self.x = None
@@ -146,13 +147,29 @@ class Volterra1D(LazyModuleMixin, nn.Module):
             and self.backend == 'matrix'
             and isinstance(self.A_input, UninitializedBuffer)
         ):
-            dwt = DWT1D(self.wave, clean=False)
-            idwt = IDWT1D(self.wave, clean=False)
+            if self.level == 1:
+                dwt = DWT1D(self.wave, clean=False)
+                idwt = IDWT1D(self.wave, clean=False)
+                A_input = dwt._get_A(self.N, device)
+                S_output = idwt._get_S(self.Ny, device)
+            else:
+                A_input = dwt_packed_axis(
+                    torch.eye(self.N, device=device, dtype=dtype),
+                    level=self.level,
+                    wave=self.wave,
+                    axis=0,
+                    backend='matrix',
+                )
+                S_output = idwt_packed_axis(
+                    torch.eye(self.Ny, device=device, dtype=dtype),
+                    level=self.level,
+                    wave=self.wave,
+                    axis=0,
+                    backend='matrix',
+                )
             matrices = (
-                ('A_input', dwt._get_A(self.N, device)),
-                ('S_input', idwt._get_S(self.N, device)),
-                ('A_output', dwt._get_A(self.Ny, device)),
-                ('S_output', idwt._get_S(self.Ny, device)),
+                ('A_input', A_input),
+                ('S_output', S_output),
             )
             for name, matrix in matrices:
                 buffer = getattr(self, name)
@@ -175,6 +192,14 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         )
         self.hm.materialize(kernel_shape, device=device, dtype=dtype)
         _glorot_uniform_(self.hm)
+        if self.mra:
+            with torch.no_grad():
+                self.hm.copy_(natural_to_wavelet_kernel(
+                    self.hm,
+                    self.wave,
+                    order=self.m,
+                    level=self.level,
+                ))
         return self
 
     def forward(self, x):
@@ -188,7 +213,12 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         if self.backend == 'matrix':
             alpha = torch.einsum('li,bic->blc', self.A_input, x)
         else:
-            alpha = analysis_axis(x, self.wave, axis=1)
+            alpha = analysis_axis(
+                x,
+                self.wave,
+                axis=1,
+                level=self.level,
+            )
         beta = torch.einsum(
             self._contraction_equation,
             *([alpha] * self.m),
@@ -196,13 +226,19 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         )
         if self.backend == 'matrix':
             return torch.einsum('uv,bvo->buo', self.S_output, beta)
-        return synthesis_axis(beta, self.wave, axis=1)
+        return synthesis_axis(
+            beta,
+            self.wave,
+            axis=1,
+            level=self.level,
+        )
 
     def __compute_output_in_natural_domain(self, x):
+        h = self.__make_h()
         return torch.einsum(
             self._contraction_equation,
             *([x] * self.m),
-            self.hm,
+            h,
         )
 
     def sanity_check(self):
@@ -212,30 +248,24 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         )
 
     def __make_H(self):
+        return self.hm
+
+    def __make_h(self):
         if not self.mra:
             return self.hm
-
-        if self.backend == 'matrix':
-            h_input = torch.einsum(
-                self._kernel_transform_equation,
-                self.hm,
-                *([self.S_input] * self.m),
-            )
-            shape = h_input.shape
-            h_for_dwt = h_input.reshape(shape[0], -1)
-            H = torch.einsum('vu,up->vp', self.A_output, h_for_dwt)
-            return H.reshape(shape)
-
-        H = self.hm
-        for axis in range(1, self.m + 1):
-            H = synthesis_transpose_axis(H, self.wave, axis=axis)
-        return analysis_axis(H, self.wave, axis=0)
+        return wavelet_to_natural_kernel(
+            self.hm,
+            self.wave,
+            order=self.m,
+            level=self.level,
+        )
 
     def get_config(self):
         return {
             'm': self.m,
             'Ny': self.Ny,
             'wave': self.wave,
+            'level': self.level,
             'filters': self.filters,
             'backend': self.backend,
         }

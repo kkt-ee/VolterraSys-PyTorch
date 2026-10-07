@@ -19,6 +19,12 @@ Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE). -->
 - Natural-domain computation with `wave=None`.
 - Trainable kernels with PyTorch autograd, optimizers, and `state_dict` serialization.
 
+For the general shift-variant `LinearVolterra1D` and `Volterra1D` modules,
+`wave=None` makes the trainable parameter the natural-domain kernel $h$.
+With a wavelet selected, the trainable parameter is the transform-domain
+coefficient tensor $H$ itself. LSI and QSI modules retain their structured
+kernel parameterizations.
+
 ## Installation
 
 ```bash
@@ -58,14 +64,34 @@ the same periodic transform without storing dense wavelet operator matrices:
 general = Volterra1D(
     m=3,
     filters=2,
-    Ny=16,
+    Ny=32,
     wave="bior1.3",
     backend="filterbank",
+    level=3,
 )
 ```
 
 This backend is available on `LSIVolterra1D`, `QSIVolterra1D`,
 `LinearVolterra1D`, and `Volterra1D`.
+
+For the general shift-variant modules, `level=1` is the backward-compatible
+default and `level>1` selects a multilevel transform. Coefficients are packed
+along the sequence axis as `[L_J, H_J, H_(J-1), ..., H_1]`, preserving the
+sequence length and kernel shape. The wavelet-domain computation is
+
+$$
+\alpha=A_Jx,\qquad
+\beta=H\alpha^m,\qquad
+y=S_J\beta,
+$$
+
+with equivalent natural kernel
+$H=A_{\mathrm{out},J}hS_{\mathrm{in},J}^{\otimes m}$. Input and output
+lengths must be divisible by $2^J$, and every decomposition level must cover
+the selected wavelet-filter length. LSI and QSI modules remain single-level.
+
+Wavelet-mode checkpoints from version 0.0.1 store $h$ rather than $H$ and
+must be basis-transformed before loading into version 0.0.2.
 
 ## TensorFlow provenance
 

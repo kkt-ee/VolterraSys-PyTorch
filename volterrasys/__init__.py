@@ -15,3 +15,5 @@ __all__ = [
     "Volterra1D",
     "QSIVolterra1D",
 ]
+
+__version__ = "0.0.2"

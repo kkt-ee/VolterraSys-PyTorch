@@ -13,11 +13,22 @@ from volterrasys.LSIVolterra1D import LSIVolterra1D
 from volterrasys.LinearVolterra1D import LinearVolterra1D
 from volterrasys.QSIVolterra1D import QSIVolterra1D
 from volterrasys.Volterra1D import Volterra1D
+from volterrasys._wavelet_ops import (
+    natural_to_wavelet_kernel,
+    wavelet_to_natural_kernel,
+)
 
 
 CASES = (
     'lsi',
     'qsi',
+    'linear',
+    'volterra_m1',
+    'volterra_m2',
+    'volterra_m3',
+)
+
+DIRECT_H_CASES = (
     'linear',
     'volterra_m1',
     'volterra_m2',
@@ -56,6 +67,22 @@ def _transformed_kernel(layer):
     return layer._Volterra1D__make_H()
 
 
+def _natural_kernel(layer):
+    if isinstance(layer, LinearVolterra1D):
+        return layer._LinearVolterra1D__make_h()
+    if isinstance(layer, Volterra1D):
+        return layer._Volterra1D__make_h()
+    return _kernel(layer)
+
+
+def _order(case):
+    if case == 'linear':
+        return 1
+    if case.startswith('volterra_m'):
+        return int(case[-1])
+    raise AssertionError(f'{case} does not use a direct H parameter.')
+
+
 def _assert_close(actual, expected, tolerance=3e-5):
     torch.testing.assert_close(
         actual,
@@ -75,10 +102,19 @@ def _build_with_shared_kernel(case, wave, ny=8, device='cpu'):
     matrix(x)
     filterbank(x)
     natural(x)
-    values = torch.randn_like(_kernel(matrix)) * 0.1
+    values = torch.randn_like(_kernel(natural)) * 0.1
     with torch.no_grad():
-        _kernel(matrix).copy_(values)
-        _kernel(filterbank).copy_(values)
+        if case in DIRECT_H_CASES:
+            wavelet_values = natural_to_wavelet_kernel(
+                values,
+                wave,
+                order=_order(case),
+            )
+            _kernel(matrix).copy_(wavelet_values)
+            _kernel(filterbank).copy_(wavelet_values)
+        else:
+            _kernel(matrix).copy_(values)
+            _kernel(filterbank).copy_(values)
         _kernel(natural).copy_(values)
     return x, matrix, filterbank, natural
 
@@ -95,8 +131,17 @@ def test_filterbank_matches_matrix_and_natural_domain(case, wave):
     _assert_close(filterbank_output, matrix_output)
     _assert_close(filterbank_output, natural_output)
 
+    if case in DIRECT_H_CASES:
+        matrix_wavelet, matrix_natural = matrix.sanity_check()
+        filterbank_wavelet, filterbank_natural = filterbank.sanity_check()
+        _assert_close(matrix_wavelet, matrix_natural)
+        _assert_close(filterbank_wavelet, filterbank_natural)
+
     assert set(filterbank.state_dict()) == {_kernel_name(filterbank)}
-    assert len(matrix.state_dict()) > 1
+    if case == 'linear':
+        assert set(matrix.state_dict()) == {'h1'}
+    else:
+        assert len(matrix.state_dict()) > 1
 
 
 def _kernel_name(layer):
@@ -182,6 +227,66 @@ def test_filterbank_supports_a_different_output_length():
     _assert_close(filterbank(x), matrix(x))
     _assert_close(filterbank(x), natural(x))
     assert filterbank(x).shape == (2, 16, 3)
+
+
+@pytest.mark.parametrize('wave', ['haar', 'db2', 'bior2.2', 'rbio2.2'])
+@pytest.mark.parametrize('case', DIRECT_H_CASES)
+def test_wavelet_parameter_is_H_and_inverse_recovers_h(case, wave):
+    x, matrix, filterbank, natural = _build_with_shared_kernel(case, wave)
+
+    _assert_close(_kernel(matrix), _transformed_kernel(matrix), tolerance=0.0)
+    _assert_close(
+        _kernel(filterbank),
+        _transformed_kernel(filterbank),
+        tolerance=0.0,
+    )
+    _assert_close(_natural_kernel(matrix), _kernel(natural))
+    _assert_close(_natural_kernel(filterbank), _kernel(natural))
+    _assert_close(matrix(x), natural(x))
+    _assert_close(filterbank(x), natural(x))
+
+
+@pytest.mark.parametrize('wave', ['haar', 'db2', 'bior2.2', 'rbio2.2'])
+@pytest.mark.parametrize('order', [1, 2, 3])
+def test_kernel_basis_conversion_round_trip(wave, order):
+    torch.manual_seed(504 + order)
+    shape = (8,) + (8,) * order + (1,) * order + (2,)
+    h = torch.randn(shape)
+    H = natural_to_wavelet_kernel(h, wave, order)
+    reconstructed = wavelet_to_natural_kernel(H, wave, order)
+    _assert_close(reconstructed, h)
+
+
+@pytest.mark.parametrize(
+    'layer_class,extra',
+    [
+        (LinearVolterra1D, {'Ny': 8}),
+        (Volterra1D, {'m': 1, 'Ny': 8}),
+        (Volterra1D, {'m': 2, 'Ny': 8}),
+        (Volterra1D, {'m': 3, 'Ny': 8}),
+    ],
+)
+def test_direct_H_initialization_is_backend_independent(layer_class, extra):
+    x = torch.ones(1, 8, 1)
+    torch.manual_seed(508)
+    matrix = layer_class(
+        filters=1,
+        wave='bior2.2',
+        backend='matrix',
+        **extra,
+    )
+    matrix(x)
+    torch.manual_seed(508)
+    filterbank = layer_class(
+        filters=1,
+        wave='bior2.2',
+        backend='filterbank',
+        **extra,
+    )
+    filterbank(x)
+
+    _assert_close(_kernel(matrix), _kernel(filterbank), tolerance=0.0)
+    _assert_close(matrix(x), filterbank(x))
 
 
 def test_backend_is_validated():

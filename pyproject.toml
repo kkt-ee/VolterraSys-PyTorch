@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "VolterraSys-PyTorch"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
   { name = "Kishore Kumar Tarafdar", email = "kkt.compute@gmail.com" },
 ]
@@ -13,7 +13,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "torch>=2.0",
-  "fdwt>=0.1.0",
+  "fdwt>=0.1.1",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",

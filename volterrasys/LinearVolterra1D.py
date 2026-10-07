@@ -3,10 +3,16 @@ import math
 import torch
 from torch import nn
 from torch.nn.modules.lazy import LazyModuleMixin
-from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
+from torch.nn.parameter import UninitializedParameter
 
 from dwt.DWT1D import DWT1D, IDWT1D
-from ._wavelet_ops import synthesis_transpose_axis, validate_backend
+from dwt.multilevel.dwt1 import dwt_packed_axis, idwt_packed_axis
+from ._wavelet_ops import (
+    natural_to_wavelet_kernel,
+    validate_backend,
+    validate_level,
+    wavelet_to_natural_kernel,
+)
 
 
 def _glorot_uniform_(tensor):
@@ -43,6 +49,7 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
         Ny=16,
         wave='haar',
         backend='matrix',
+        level=1,
         **kwargs,
     ):
         super().__init__()
@@ -53,6 +60,7 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
             self.mra = True
         self.filters = filters
         self.Ny = Ny
+        self.level = validate_level(level)
         self.backend = validate_backend(backend)
 
         self.N = None
@@ -60,21 +68,7 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
         self.h1 = UninitializedParameter()
 
         if self.mra:
-            if self.backend == 'matrix':
-                self.S_input = UninitializedBuffer()
-            else:
-                self.register_buffer('S_input', None)
-            self.idwt_input = IDWT1D(
-                self.wave,
-                clean=False,
-                backend=self.backend,
-            )
             self.dwt_input = DWT1D(
-                self.wave,
-                clean=False,
-                backend=self.backend,
-            )
-            self.dwt_output = DWT1D(
                 self.wave,
                 clean=False,
                 backend=self.backend,
@@ -85,10 +79,7 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
                 backend=self.backend,
             )
         else:
-            self.register_buffer('S_input', None)
-            self.idwt_input = None
             self.dwt_input = None
-            self.dwt_output = None
             self.idwt_output = None
 
         self.x = None
@@ -106,22 +97,20 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
         self.N = int(input_shape[1])
         self.channels = int(input_shape[-1])
 
-        if (
-            self.mra
-            and self.backend == 'matrix'
-            and isinstance(self.S_input, UninitializedBuffer)
-        ):
-            S = self.idwt_input._get_S(self.N, device).to(dtype=dtype)
-            self.S_input.materialize((self.N, self.N), device=device, dtype=dtype)
-            with torch.no_grad():
-                self.S_input.copy_(S)
-
         if not isinstance(self.h1, UninitializedParameter):
             return self
 
         kernel_shape = (self.Ny, self.N, self.channels, self.filters)
         self.h1.materialize(kernel_shape, device=device, dtype=dtype)
         _glorot_uniform_(self.h1)
+        if self.mra:
+            with torch.no_grad():
+                self.h1.copy_(natural_to_wavelet_kernel(
+                    self.h1,
+                    self.wave,
+                    order=1,
+                    level=self.level,
+                ))
         return self
 
     def forward(self, x):
@@ -135,13 +124,32 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
         HT = self.__make_H()
 
         # H[v,l] and alpha[l].
-        alpha = self.dwt_input(x)
+        if self.level == 1:
+            alpha = self.dwt_input(x)
+        else:
+            alpha = dwt_packed_axis(
+                x,
+                level=self.level,
+                wave=self.wave,
+                axis=1,
+                backend=self.backend,
+            )
         beta = torch.einsum('bic,uico->buo', alpha, HT)
-        y = self.idwt_output(beta)
+        if self.level == 1:
+            y = self.idwt_output(beta)
+        else:
+            y = idwt_packed_axis(
+                beta,
+                level=self.level,
+                wave=self.wave,
+                axis=1,
+                backend=self.backend,
+            )
         return y
 
     def __compute_output_in_natural_domain(self, x):
-        ynatural = torch.einsum('bic,uico->buo', x, self.h1)
+        h = self.__make_h()
+        ynatural = torch.einsum('bic,uico->buo', x, h)
         return ynatural
 
     def sanity_check(self):
@@ -151,48 +159,23 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
         )
 
     def __make_H(self):
-        def mra_kernel(h):
-            shape = h.shape
-            Ny, N, channels, filters = shape
+        return self.h1
 
-            # Combine channels and filters: (Ny, N, channels * filters).
-            h1_reshaped = self.h1.reshape(Ny, N, -1)
-
-            # Apply synthesis on the input axis and DWT on the output axis.
-            if self.backend == 'matrix':
-                dwt_once = torch.einsum(
-                    'uic,il->ulc', h1_reshaped, self.S_input
-                )
-            else:
-                dwt_once = synthesis_transpose_axis(
-                    h1_reshaped,
-                    self.wave,
-                    axis=1,
-                )
-            dwt_once_T = dwt_once.permute(1, 0, 2)
-            dwt_twice = self.dwt_output(dwt_once_T)
-
-            # Return to (Ny, N, channels * filters).
-            tmp_H = dwt_twice.permute(1, 0, 2)
-
-            # Restore (Ny, N, channels, filters).
-            H = tmp_H.reshape(
-                self.h1.shape[0],
-                self.h1.shape[1],
-                self.h1.shape[2],
-                self.h1.shape[3],
-            )
-            return H
-
-        if self.mra is True:
-            return mra_kernel(self.h1)
-        else:
+    def __make_h(self):
+        if not self.mra:
             return self.h1
+        return wavelet_to_natural_kernel(
+            self.h1,
+            self.wave,
+            order=1,
+            level=self.level,
+        )
 
     def get_config(self):
         return {
             'Ny': self.Ny,
             'wave': self.wave,
+            'level': self.level,
             'filters': self.filters,
             'backend': self.backend,
         }
