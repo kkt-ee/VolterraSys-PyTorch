@@ -50,6 +50,23 @@ y_general = general(x) # (2, 16, 2)
 
 The wavelet-domain and natural-domain implementations use the same channels-last tensor layout. `filters` is the number of output channels.
 
+The wavelet-domain layers use `backend="matrix"` by default, preserving the
+existing dense operator implementation. Set `backend="filterbank"` to compute
+the same periodic transform without storing dense wavelet operator matrices:
+
+```python
+general = Volterra1D(
+    m=3,
+    filters=2,
+    Ny=16,
+    wave="bior1.3",
+    backend="filterbank",
+)
+```
+
+This backend is available on `LSIVolterra1D`, `QSIVolterra1D`,
+`LinearVolterra1D`, and `Volterra1D`.
+
 ## TensorFlow provenance
 
 This repository is an operation-by-operation PyTorch port of [kkt-ee/VolterraSys](https://github.com/kkt-ee/VolterraSys). The initial port was based on TensorFlow commit `4ef3877` from `bugfix/biortho-linear1d`, marked by the `tf-final-before-pytorch-port` tag. The original TensorFlow Git history is retained as this repository's ancestry.

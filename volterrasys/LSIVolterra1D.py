@@ -4,6 +4,7 @@ from torch.nn.parameter import UninitializedBuffer
 
 from dwt.DWT1D import DWT1D, IDWT1D
 from .LSIVolterraNDlayout import LSIVolterraNDlayout
+from ._wavelet_ops import synthesis_transpose_axis, validate_backend
 
 
 class LSIVolterra1D(LSIVolterraNDlayout):
@@ -18,12 +19,31 @@ class LSIVolterra1D(LSIVolterraNDlayout):
     Output: Linear shift invariant sequence monomial y1[n]
     """
 
-    def __init__(self, filters=1, kernel_size=4, wave='haar', **kwargs):
+    def __init__(
+        self,
+        filters=1,
+        kernel_size=4,
+        wave='haar',
+        backend='matrix',
+        **kwargs,
+    ):
         super().__init__(filters=filters, kernel_size=kernel_size, wave=wave, **kwargs)
+        self.backend = validate_backend(backend)
         if self.mra:
-            self.S_input = UninitializedBuffer()
-            self.dwt1 = DWT1D(self.wave, clean=False)
-            self.idwt1 = IDWT1D(self.wave, clean=False)
+            if self.backend == 'matrix':
+                self.S_input = UninitializedBuffer()
+            else:
+                self.register_buffer('S_input', None)
+            self.dwt1 = DWT1D(
+                self.wave,
+                clean=False,
+                backend=self.backend,
+            )
+            self.idwt1 = IDWT1D(
+                self.wave,
+                clean=False,
+                backend=self.backend,
+            )
         else:
             self.register_buffer('S_input', None)
             self.dwt1 = None
@@ -39,7 +59,11 @@ class LSIVolterra1D(LSIVolterraNDlayout):
         if dtype is None:
             dtype = self.h1.dtype
 
-        if self.mra and isinstance(self.S_input, UninitializedBuffer):
+        if (
+            self.mra
+            and self.backend == 'matrix'
+            and isinstance(self.S_input, UninitializedBuffer)
+        ):
             N = int(input_shape[1])
             S = self.idwt1._get_S(N, device).to(dtype=dtype)
             self.S_input.materialize((N, N), device=device, dtype=dtype)
@@ -72,7 +96,16 @@ class LSIVolterra1D(LSIVolterraNDlayout):
                 self.N, self.N, self.channels * self.filters)
 
             # Synthesis transform of the input index.
-            x = torch.einsum('ric,il->rlc', tmp_h_for_dwt, self.S_input)
+            if self.backend == 'matrix':
+                x = torch.einsum(
+                    'ric,il->rlc', tmp_h_for_dwt, self.S_input
+                )
+            else:
+                x = synthesis_transpose_axis(
+                    tmp_h_for_dwt,
+                    self.wave,
+                    axis=1,
+                )
 
             # Transpose to swap axes 0 and 1 (rows and columns).
             xT = x.permute(1, 0, 2)
@@ -111,6 +144,11 @@ class LSIVolterra1D(LSIVolterraNDlayout):
 
     def sanity_check(self):
         return self._call_with_mra_kernel(self.x), self._call_in_natural_domain(self.x)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({'backend': self.backend})
+        return config
 
 
 if __name__ == '__main__':

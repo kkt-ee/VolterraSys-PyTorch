@@ -7,6 +7,12 @@ from torch.nn.modules.lazy import LazyModuleMixin
 from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 
 from dwt.DWT1D import DWT1D, IDWT1D
+from ._wavelet_ops import (
+    analysis_axis,
+    synthesis_axis,
+    synthesis_transpose_axis,
+    validate_backend,
+)
 
 
 def _glorot_uniform_(tensor):
@@ -37,7 +43,15 @@ class Volterra1D(LazyModuleMixin, nn.Module):
     Output: mth-order monomial ym (shift variant)
     """
 
-    def __init__(self, m=1, filters=1, Ny=16, wave='haar', **kwargs):
+    def __init__(
+        self,
+        m=1,
+        filters=1,
+        Ny=16,
+        wave='haar',
+        backend='matrix',
+        **kwargs,
+    ):
         super().__init__()
         if isinstance(m, bool) or not isinstance(m, int) or m < 1:
             raise ValueError("m must be a positive integer.")
@@ -47,6 +61,7 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         self.mra = self.wave is not None
         self.filters = filters
         self.Ny = Ny
+        self.backend = validate_backend(backend)
 
         self._make_einsum_equations()
 
@@ -54,7 +69,7 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         self.channels = None
         self.hm = UninitializedParameter()
 
-        if self.mra:
+        if self.mra and self.backend == 'matrix':
             self.A_input = UninitializedBuffer()
             self.S_input = UninitializedBuffer()
             self.A_output = UninitializedBuffer()
@@ -126,7 +141,11 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         self.N = int(input_shape[1])
         self.channels = int(input_shape[-1])
 
-        if self.mra and isinstance(self.A_input, UninitializedBuffer):
+        if (
+            self.mra
+            and self.backend == 'matrix'
+            and isinstance(self.A_input, UninitializedBuffer)
+        ):
             dwt = DWT1D(self.wave, clean=False)
             idwt = IDWT1D(self.wave, clean=False)
             matrices = (
@@ -166,13 +185,18 @@ class Volterra1D(LazyModuleMixin, nn.Module):
 
     def __compute_output_with_mra_kernel(self, x):
         H = self.__make_H()
-        alpha = torch.einsum('li,bic->blc', self.A_input, x)
+        if self.backend == 'matrix':
+            alpha = torch.einsum('li,bic->blc', self.A_input, x)
+        else:
+            alpha = analysis_axis(x, self.wave, axis=1)
         beta = torch.einsum(
             self._contraction_equation,
             *([alpha] * self.m),
             H,
         )
-        return torch.einsum('uv,bvo->buo', self.S_output, beta)
+        if self.backend == 'matrix':
+            return torch.einsum('uv,bvo->buo', self.S_output, beta)
+        return synthesis_axis(beta, self.wave, axis=1)
 
     def __compute_output_in_natural_domain(self, x):
         return torch.einsum(
@@ -191,15 +215,21 @@ class Volterra1D(LazyModuleMixin, nn.Module):
         if not self.mra:
             return self.hm
 
-        h_input = torch.einsum(
-            self._kernel_transform_equation,
-            self.hm,
-            *([self.S_input] * self.m),
-        )
-        shape = h_input.shape
-        h_for_dwt = h_input.reshape(shape[0], -1)
-        H = torch.einsum('vu,up->vp', self.A_output, h_for_dwt)
-        return H.reshape(shape)
+        if self.backend == 'matrix':
+            h_input = torch.einsum(
+                self._kernel_transform_equation,
+                self.hm,
+                *([self.S_input] * self.m),
+            )
+            shape = h_input.shape
+            h_for_dwt = h_input.reshape(shape[0], -1)
+            H = torch.einsum('vu,up->vp', self.A_output, h_for_dwt)
+            return H.reshape(shape)
+
+        H = self.hm
+        for axis in range(1, self.m + 1):
+            H = synthesis_transpose_axis(H, self.wave, axis=axis)
+        return analysis_axis(H, self.wave, axis=0)
 
     def get_config(self):
         return {
@@ -207,6 +237,7 @@ class Volterra1D(LazyModuleMixin, nn.Module):
             'Ny': self.Ny,
             'wave': self.wave,
             'filters': self.filters,
+            'backend': self.backend,
         }
 
 

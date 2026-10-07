@@ -6,6 +6,7 @@ from torch.nn.modules.lazy import LazyModuleMixin
 from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 
 from dwt.DWT1D import DWT1D, IDWT1D
+from ._wavelet_ops import synthesis_transpose_axis, validate_backend
 
 
 def _glorot_uniform_(tensor):
@@ -36,7 +37,14 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
     Output: Linear monomial y1 (shift variant)
     """
 
-    def __init__(self, filters=1, Ny=16, wave='haar', **kwargs):
+    def __init__(
+        self,
+        filters=1,
+        Ny=16,
+        wave='haar',
+        backend='matrix',
+        **kwargs,
+    ):
         super().__init__()
         self.wave = wave
         if self.wave is None:
@@ -45,17 +53,37 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
             self.mra = True
         self.filters = filters
         self.Ny = Ny
+        self.backend = validate_backend(backend)
 
         self.N = None
         self.channels = None
         self.h1 = UninitializedParameter()
 
         if self.mra:
-            self.S_input = UninitializedBuffer()
-            self.idwt_input = IDWT1D(self.wave, clean=False)
-            self.dwt_input = DWT1D(self.wave, clean=False)
-            self.dwt_output = DWT1D(self.wave, clean=False)
-            self.idwt_output = IDWT1D(self.wave, clean=False)
+            if self.backend == 'matrix':
+                self.S_input = UninitializedBuffer()
+            else:
+                self.register_buffer('S_input', None)
+            self.idwt_input = IDWT1D(
+                self.wave,
+                clean=False,
+                backend=self.backend,
+            )
+            self.dwt_input = DWT1D(
+                self.wave,
+                clean=False,
+                backend=self.backend,
+            )
+            self.dwt_output = DWT1D(
+                self.wave,
+                clean=False,
+                backend=self.backend,
+            )
+            self.idwt_output = IDWT1D(
+                self.wave,
+                clean=False,
+                backend=self.backend,
+            )
         else:
             self.register_buffer('S_input', None)
             self.idwt_input = None
@@ -78,7 +106,11 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
         self.N = int(input_shape[1])
         self.channels = int(input_shape[-1])
 
-        if self.mra and isinstance(self.S_input, UninitializedBuffer):
+        if (
+            self.mra
+            and self.backend == 'matrix'
+            and isinstance(self.S_input, UninitializedBuffer)
+        ):
             S = self.idwt_input._get_S(self.N, device).to(dtype=dtype)
             self.S_input.materialize((self.N, self.N), device=device, dtype=dtype)
             with torch.no_grad():
@@ -127,9 +159,16 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
             h1_reshaped = self.h1.reshape(Ny, N, -1)
 
             # Apply synthesis on the input axis and DWT on the output axis.
-            dwt_once = torch.einsum(
-                'uic,il->ulc', h1_reshaped, self.S_input
-            )
+            if self.backend == 'matrix':
+                dwt_once = torch.einsum(
+                    'uic,il->ulc', h1_reshaped, self.S_input
+                )
+            else:
+                dwt_once = synthesis_transpose_axis(
+                    h1_reshaped,
+                    self.wave,
+                    axis=1,
+                )
             dwt_once_T = dwt_once.permute(1, 0, 2)
             dwt_twice = self.dwt_output(dwt_once_T)
 
@@ -155,6 +194,7 @@ class LinearVolterra1D(LazyModuleMixin, nn.Module):
             'Ny': self.Ny,
             'wave': self.wave,
             'filters': self.filters,
+            'backend': self.backend,
         }
 
 
