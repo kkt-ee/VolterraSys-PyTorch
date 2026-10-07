@@ -6,10 +6,12 @@
 
 from .LSIVolterra1D import LSIVolterra1D
 from .LinearVolterra1D import LinearVolterra1D
+from .Volterra1D import Volterra1D
 from .QSIVolterra1D import QSIVolterra1D
 
 __all__ = [
     "LSIVolterra1D",
     "LinearVolterra1D",
+    "Volterra1D",
     "QSIVolterra1D",
 ]
